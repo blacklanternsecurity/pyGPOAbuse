@@ -220,17 +220,47 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Ensure all parts are properly decoded to strings
-            sid_string = domain_sid.formatCanonical()
-            if isinstance(sid_string, bytes):
-                try:
-                    sid_string = sid_string.decode('utf-8')
-                except UnicodeDecodeError:
-                    # Fallback to latin-1 which can decode any byte sequence
-                    sid_string = sid_string.decode('latin-1')
+            # Create SID string manually instead of using formatCanonical() to avoid byte-string issues
+            # Get the domain SID parts
+            domain_sid_parts = []
+            if hasattr(domain_sid, 'Revision'):
+                domain_sid_parts.append(str(domain_sid.Revision))
+            else:
+                domain_sid_parts.append('1')  # Default revision
+                
+            # Get identifier authority
+            if hasattr(domain_sid, 'IdentifierAuthority'):
+                if hasattr(domain_sid.IdentifierAuthority, 'Value') and domain_sid.IdentifierAuthority.Value:
+                    auth_value = domain_sid.IdentifierAuthority.Value
+                    if isinstance(auth_value, bytes) and len(auth_value) >= 6:
+                        auth_num = auth_value[5] if isinstance(auth_value[5], int) else ord(auth_value[5:6])
+                        domain_sid_parts.append(str(auth_num))
+                    else:
+                        domain_sid_parts.append('5')  # Default NT Authority
+                else:
+                    domain_sid_parts.append('5')  # Default NT Authority
+            else:
+                domain_sid_parts.append('5')  # Default NT Authority
+                
+            # Get subauthorities
+            if hasattr(domain_sid, 'SubAuthorityCount') and hasattr(domain_sid, 'SubAuthority'):
+                count = domain_sid.SubAuthorityCount
+                if isinstance(count, bytes):
+                    count = ord(count)
+                
+                for i in range(count):
+                    if isinstance(domain_sid.SubAuthority, bytes):
+                        # Parse 4 bytes at a time for each subauthority
+                        if len(domain_sid.SubAuthority) >= (i+1)*4:
+                            import struct
+                            subauth = struct.unpack('<L', domain_sid.SubAuthority[i*4:(i+1)*4])[0]
+                            domain_sid_parts.append(str(subauth))
+                    elif isinstance(domain_sid.SubAuthority, list):
+                        if i < len(domain_sid.SubAuthority):
+                            domain_sid_parts.append(str(domain_sid.SubAuthority[i]))
             
-            rid_string = str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
-            user_sid = sid_string + "-" + rid_string
+            # Construct the full SID with the RID
+            user_sid = 'S-' + '-'.join(domain_sid_parts) + '-' + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -311,17 +341,47 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Ensure all parts are properly decoded to strings
-            sid_string = domain_sid.formatCanonical()
-            if isinstance(sid_string, bytes):
-                try:
-                    sid_string = sid_string.decode('utf-8')
-                except UnicodeDecodeError:
-                    # Fallback to latin-1 which can decode any byte sequence
-                    sid_string = sid_string.decode('latin-1')
+            # Create SID string manually instead of using formatCanonical() to avoid byte-string issues
+            # Get the domain SID parts
+            domain_sid_parts = []
+            if hasattr(domain_sid, 'Revision'):
+                domain_sid_parts.append(str(domain_sid.Revision))
+            else:
+                domain_sid_parts.append('1')  # Default revision
+                
+            # Get identifier authority
+            if hasattr(domain_sid, 'IdentifierAuthority'):
+                if hasattr(domain_sid.IdentifierAuthority, 'Value') and domain_sid.IdentifierAuthority.Value:
+                    auth_value = domain_sid.IdentifierAuthority.Value
+                    if isinstance(auth_value, bytes) and len(auth_value) >= 6:
+                        auth_num = auth_value[5] if isinstance(auth_value[5], int) else ord(auth_value[5:6])
+                        domain_sid_parts.append(str(auth_num))
+                    else:
+                        domain_sid_parts.append('5')  # Default NT Authority
+                else:
+                    domain_sid_parts.append('5')  # Default NT Authority
+            else:
+                domain_sid_parts.append('5')  # Default NT Authority
+                
+            # Get subauthorities
+            if hasattr(domain_sid, 'SubAuthorityCount') and hasattr(domain_sid, 'SubAuthority'):
+                count = domain_sid.SubAuthorityCount
+                if isinstance(count, bytes):
+                    count = ord(count)
+                
+                for i in range(count):
+                    if isinstance(domain_sid.SubAuthority, bytes):
+                        # Parse 4 bytes at a time for each subauthority
+                        if len(domain_sid.SubAuthority) >= (i+1)*4:
+                            import struct
+                            subauth = struct.unpack('<L', domain_sid.SubAuthority[i*4:(i+1)*4])[0]
+                            domain_sid_parts.append(str(subauth))
+                    elif isinstance(domain_sid.SubAuthority, list):
+                        if i < len(domain_sid.SubAuthority):
+                            domain_sid_parts.append(str(domain_sid.SubAuthority[i]))
             
-            rid_string = str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
-            user_sid = sid_string + "-" + rid_string
+            # Construct the full SID with the RID
+            user_sid = 'S-' + '-'.join(domain_sid_parts) + '-' + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
