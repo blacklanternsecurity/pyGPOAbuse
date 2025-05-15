@@ -618,3 +618,124 @@ class GPO:
         except Exception as e:
             logging.error(f"Error restoring GPO: {str(e)}", exc_info=True)
             return False
+
+    def add_local_admin(self, domain, gpo_id, username, sid, force=False):
+        """Add a user to the local administrators group in a GPO
+        
+        Args:
+            domain: Domain name
+            gpo_id: ID of the GPO to modify
+            username: Username to add as local admin
+            sid: SID of the user
+            force: Force update if GptTmpl.inf already exists with group memberships
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            tid = self._smb_session.connectTree("SYSVOL")
+            logging.debug("Connected to SYSVOL")
+        except:
+            logging.error("Unable to connect to SYSVOL share", exc_info=True)
+            return False
+            
+        path = domain + "/Policies/{" + gpo_id + "}/"
+        
+        try:
+            self._smb_session.listPath("SYSVOL", path)
+            logging.debug("GPO id {} exists".format(gpo_id))
+        except:
+            logging.error("GPO id {} does not exist".format(gpo_id), exc_info=True)
+            return False
+            
+        # Local admin settings can only be applied to Machine policy
+        root_path = "Machine"
+        secedit_path = "{}/Microsoft/Windows NT/SecEdit".format(root_path)
+        
+        if not self._check_or_create(path, secedit_path):
+            return False
+            
+        inf_path = path + "{}/Microsoft/Windows NT/SecEdit/GptTmpl.inf".format(root_path)
+        
+        # Basic content for new GptTmpl.inf file
+        base_content = """[Unicode]
+Unicode=yes
+[Version]
+signature="$CHICAGO$"
+Revision=1
+"""
+        
+        # Group membership content for local admin
+        group_content = """[Group Membership]
+*S-1-5-32-544__Memberof =
+*S-1-5-32-544__Members = *{}
+""".format(sid)
+        
+        try:
+            try:
+                # Try to open existing GptTmpl.inf
+                fid = self._smb_session.openFile(tid, inf_path)
+                inf_content = self._smb_session.readFile(tid, fid, singleCall=False).decode("utf-8")
+                self._smb_session.closeFile(tid, fid)
+                
+                # Check if group memberships are already defined
+                if "[Group Membership]" in inf_content:
+                    if not force:
+                        logging.error("The GPO already includes group memberships in GptTmpl.inf.")
+                        logging.error("Use -f to override the existing settings. This may break affected systems!")
+                        return False
+                    
+                    # If force is specified, update the existing administrators line
+                    new_lines = []
+                    group_section = False
+                    admin_line_updated = False
+                    
+                    for line in inf_content.splitlines():
+                        if "[Group Membership]" in line:
+                            group_section = True
+                            new_lines.append(line)
+                        elif group_section and "*S-1-5-32-544__Members" in line.replace(" ", ""):
+                            # Handle case where line already contains members
+                            if line.strip().endswith("="):
+                                # Empty members list
+                                new_lines.append(line + " *{}".format(sid))
+                            else:
+                                # Existing members, add new SID
+                                new_lines.append(line + ", *{}".format(sid))
+                            admin_line_updated = True
+                        else:
+                            new_lines.append(line)
+                    
+                    if group_section and not admin_line_updated:
+                        # If we found a group section but no admin members line, add it before the next section
+                        for i, line in enumerate(new_lines):
+                            if group_section and line.startswith("[") and "[Group Membership]" not in line:
+                                new_lines.insert(i, "*S-1-5-32-544__Members = *{}".format(sid))
+                                admin_line_updated = True
+                                break
+                        
+                        # If we didn't find another section, add at the end of file
+                        if not admin_line_updated:
+                            new_lines.append("*S-1-5-32-544__Members = *{}".format(sid))
+                    
+                    # Create the updated content
+                    new_content = "\n".join(new_lines)
+                else:
+                    # No group membership section exists, append it
+                    new_content = inf_content.rstrip() + "\n" + group_content
+            except:
+                # File does not exist, create new file with membership info
+                logging.debug("GptTmpl.inf does not exist. Creating it...")
+                new_content = base_content + group_content
+            
+            # Write the new content to the file
+            fid = self._smb_session.createFile(tid, inf_path)
+            self._smb_session.writeFile(tid, fid, new_content)
+            self._smb_session.closeFile(tid, fid)
+            logging.debug("Local admin update successful")
+            
+            return True
+            
+        except Exception as e:
+            logging.error("Error while adding local admin: {}".format(str(e)), exc_info=True)
+            return False

