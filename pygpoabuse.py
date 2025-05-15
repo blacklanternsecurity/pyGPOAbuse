@@ -210,12 +210,18 @@ try:
             # Extract the RID as an integer directly
             user_rid = resp['RelativeIds']['Element'][0]
             
+            # Check if user_rid is bytes and convert to int if needed
+            if isinstance(user_rid, bytes):
+                user_rid_int = int.from_bytes(user_rid, byteorder='little')
+            else:
+                user_rid_int = user_rid
+            
             resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
             # Use the RID directly as an integer
-            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid)
+            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid_int)
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -286,12 +292,18 @@ try:
             # Extract the RID as an integer directly
             user_rid = resp['RelativeIds']['Element'][0]
             
+            # Check if user_rid is bytes and convert to int if needed
+            if isinstance(user_rid, bytes):
+                user_rid_int = int.from_bytes(user_rid, byteorder='little')
+            else:
+                user_rid_int = user_rid
+            
             resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
             # Use the RID directly as an integer
-            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid)
+            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid_int)
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
