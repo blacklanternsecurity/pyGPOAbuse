@@ -220,8 +220,8 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Use the RID directly as an integer
-            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid_int)
+            # Use the RID directly as an integer - ensure it's properly converted to a string
+            user_sid = domain_sid.formatCanonical() + "-" + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -302,8 +302,8 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Use the RID directly as an integer
-            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid_int)
+            # Use the RID directly as an integer - ensure it's properly converted to a string
+            user_sid = domain_sid.formatCanonical() + "-" + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
