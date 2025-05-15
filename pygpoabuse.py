@@ -114,10 +114,11 @@ else:
     protocol = 'ldap'
 
 if options.k:
-    if not options.ccache:
-        logging.error('-ccache required (path of ccache file, must be in local directory)')
-        sys.exit(1)
-    url = '{}+kerberos-ccache://{}\\{}:{}@{}/?dc={}'.format(protocol, domain, username, options.ccache, dc_ip, dc_ip)
+    if options.ccache:
+        url = '{}+kerberos-ccache://{}\\{}:{}@{}/?dc={}'.format(protocol, domain, username, options.ccache, dc_ip, dc_ip)
+    else:
+        # Use password for Kerberos authentication
+        url = '{}+kerberos://{}\\{}:{}@{}/?dc={}'.format(protocol, domain, username, password, dc_ip, dc_ip)
 elif password != '':
     url = '{}+ntlm-password://{}\\{}:{}@{}'.format(protocol, domain, username, password, dc_ip)
     lmhash, nthash = "",""
@@ -138,7 +139,7 @@ def get_session(address, target_ip="", username="", password="", lmhash="", ntha
 try:
     smb_session = SMBConnection(dc_ip, dc_ip)
     if options.k:
-        smb_session.kerberosLogin(user=username, password='', domain=domain, kdcHost=dc_ip)
+        smb_session.kerberosLogin(user=username, password=password, domain=domain, kdcHost=dc_ip, useCache=options.ccache is not None)
     else:
         smb_session.login(username, password, domain, lmhash, nthash)
 except Exception as e:
