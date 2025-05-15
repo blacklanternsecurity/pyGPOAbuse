@@ -52,7 +52,7 @@ rights_group.add_argument('-user-account', action='store', help='User account to
 
 # Local Admin arguments
 admin_group = parser.add_argument_group('Local Admin arguments (use with --add-local-admin)')
-admin_group.add_argument('-user-account', action='store', help='User account to add as local administrator')
+admin_group.add_argument('-admin-account', action='store', help='User account to add as local administrator')
 
 # Scheduled Task arguments
 task_group = parser.add_argument_group('ScheduledTask arguments (use with --add-task)')
@@ -248,8 +248,8 @@ try:
             
     elif options.add_local_admin:
         # Check required parameters for adding local admin
-        if not options.user_account:
-            logging.error("User account must be specified with -user-account parameter")
+        if not options.admin_account:
+            logging.error("User account must be specified with -admin-account parameter")
             sys.exit(1)
             
         # Get SID of the user account
@@ -279,7 +279,7 @@ try:
             resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
             domain_handle = resp['DomainHandle']
             
-            resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.user_account])
+            resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.admin_account])
             user_rid = resp['RelativeIds']['Element'][0]
             
             resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
@@ -288,7 +288,7 @@ try:
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
             user_sid = domain_sid.formatCanonical() + "-" + str(user_rid)
             
-            logging.info("User SID for {} is {}".format(options.user_account, user_sid))
+            logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
             # Close handles
             samr.hSamrCloseHandle(dce, user_handle)
@@ -299,7 +299,7 @@ try:
             success = gpo.add_local_admin(
                 domain=domain,
                 gpo_id=options.gpo_id,
-                username=options.user_account,
+                username=options.admin_account,
                 sid=user_sid,
                 force=options.f
             )
@@ -307,7 +307,7 @@ try:
             if success:
                 if gpo.update_versions(url, domain, options.gpo_id, gpo_type="computer"):  # Local admin is always computer GPO
                     logging.info("Version updated")
-                    logging.success("User {} successfully added as local administrator!".format(options.user_account))
+                    logging.success("User {} successfully added as local administrator!".format(options.admin_account))
                 else:
                     logging.error("Error while updating versions")
                     sys.exit(1)

