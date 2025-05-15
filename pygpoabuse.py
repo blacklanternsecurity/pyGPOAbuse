@@ -207,15 +207,15 @@ try:
             domain_handle = resp['DomainHandle']
             
             resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.user_account])
+            # Extract the RID as an integer directly
             user_rid = resp['RelativeIds']['Element'][0]
             
             resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Convert user_rid from bytes to int before using it in string concatenation
-            user_rid_int = int.from_bytes(user_rid, byteorder='little')
-            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid_int)
+            # Use the RID directly as an integer
+            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid)
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -283,15 +283,15 @@ try:
             domain_handle = resp['DomainHandle']
             
             resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.admin_account])
+            # Extract the RID as an integer directly
             user_rid = resp['RelativeIds']['Element'][0]
             
             resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Convert user_rid from bytes to int before using it in string concatenation
-            user_rid_int = int.from_bytes(user_rid, byteorder='little')
-            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid_int)
+            # Use the RID directly as an integer
+            user_sid = domain_sid.formatCanonical() + "-" + str(user_rid)
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
