@@ -220,8 +220,17 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Use the RID directly as an integer - ensure it's properly converted to a string
-            user_sid = domain_sid.formatCanonical() + "-" + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
+            # Ensure all parts are properly decoded to strings
+            sid_string = domain_sid.formatCanonical()
+            if isinstance(sid_string, bytes):
+                try:
+                    sid_string = sid_string.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Fallback to latin-1 which can decode any byte sequence
+                    sid_string = sid_string.decode('latin-1')
+            
+            rid_string = str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
+            user_sid = sid_string + "-" + rid_string
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -302,8 +311,17 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Use the RID directly as an integer - ensure it's properly converted to a string
-            user_sid = domain_sid.formatCanonical() + "-" + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
+            # Ensure all parts are properly decoded to strings
+            sid_string = domain_sid.formatCanonical()
+            if isinstance(sid_string, bytes):
+                try:
+                    sid_string = sid_string.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Fallback to latin-1 which can decode any byte sequence
+                    sid_string = sid_string.decode('latin-1')
+            
+            rid_string = str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
+            user_sid = sid_string + "-" + rid_string
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
