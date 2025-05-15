@@ -18,6 +18,8 @@ class GpoFormatter(logging.Formatter):
             record.bullet = '\033[1;33m[!]\033[0m'
         elif record.levelno == logging.ERROR:
             record.bullet = '\033[1;31m[x]\033[0m'
+        elif record.levelno == 25:  # SUCCESS level
+            record.bullet = '\033[1;32m[+]\033[0m'
         else:
             record.bullet = '\033[1;32m[+]\033[0m'
 
@@ -35,4 +37,9 @@ def init():
     logging.getLogger().addHandler(handler)
     logging.getLogger().setLevel(logging.INFO)
     logging.addLevelName(25, 'SUCCESS')
-    setattr(logging, 'success', lambda message, *args: logging.getLogger()._log(25, message, args))
+    
+    # Add success logging method to the logging module
+    def success(message, *args, **kwargs):
+        logging.log(25, message, *args, **kwargs)
+        
+    logging.success = success

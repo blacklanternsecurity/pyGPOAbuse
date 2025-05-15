@@ -11,6 +11,7 @@ import argparse
 import logging
 import re
 import sys
+import os
 
 from impacket.smbconnection import SMBConnection
 from impacket.examples.utils import parse_credentials
@@ -40,6 +41,8 @@ parser.add_argument('-ccache', action='store', help='ccache file name (must be i
 attack_type = parser.add_mutually_exclusive_group(required=True)
 attack_type.add_argument('--add-rights', action='store_true', help='Add rights to a user')
 attack_type.add_argument('--add-task', action='store_true', help='Add ScheduledTask to GPO')
+attack_type.add_argument('--backup-gpo', action='store_true', help='Backup a GPO before modification')
+attack_type.add_argument('--restore-gpo', action='store_true', help='Restore a GPO from backup')
 
 # User Rights arguments
 rights_group = parser.add_argument_group('User Rights arguments (use with --add-rights)')
@@ -55,6 +58,11 @@ task_group.add_argument('-description', action='store', help='Task description (
 task_group.add_argument('-powershell', action='store_true', help='Use Powershell for command execution')
 task_group.add_argument('-command', action='store',
                       help='Command to execute (Default: Add john:H4x00r123.. as local Administrator)')
+
+# Backup/Restore arguments
+backup_group = parser.add_argument_group('Backup arguments (use with --backup-gpo or --restore-gpo)')
+backup_group.add_argument('-backup-dir', action='store', help='Directory to store/retrieve backup')
+backup_group.add_argument('-backup-id', action='store', help='ID of backup to restore (only with --restore-gpo)')
 
 if len(sys.argv) == 1:
     parser.print_help()
@@ -231,6 +239,47 @@ try:
                 
         except Exception as e:
             logging.error("Error while getting user SID", exc_info=True)
+            sys.exit(1)
+    
+    elif options.backup_gpo:
+        # Check required parameters for backup
+        if not options.gpo_id:
+            logging.error("GPO ID must be specified with -gpo-id parameter")
+            sys.exit(1)
+            
+        # Backup the GPO
+        backup_id = gpo.backup_gpo(
+            domain=domain,
+            gpo_id=options.gpo_id,
+            backup_dir=options.backup_dir
+        )
+        
+        if backup_id:
+            logging.success(f"GPO backup completed. Backup ID: {backup_id}")
+            if options.backup_dir:
+                logging.info(f"Backup stored in: {os.path.join(options.backup_dir, backup_id)}")
+            else:
+                logging.info(f"Backup stored in: {os.path.join(os.getcwd(), backup_id)}")
+        else:
+            logging.error("Failed to backup GPO")
+            sys.exit(1)
+    
+    elif options.restore_gpo:
+        # Check required parameters for restore
+        if not options.backup_id and not options.backup_dir:
+            logging.error("Either -backup-id or -backup-dir must be specified")
+            sys.exit(1)
+            
+        # Restore the GPO
+        success = gpo.restore_gpo(
+            backup_id=options.backup_id,
+            backup_dir=options.backup_dir
+        )
+        
+        if success:
+            logging.success("GPO restore completed successfully")
+        else:
+            logging.error("Failed to restore GPO")
             sys.exit(1)
         
 except Exception as e:

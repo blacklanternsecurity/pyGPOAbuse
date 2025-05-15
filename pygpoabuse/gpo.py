@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import re
+import os
+import time
+import json
 from pygpoabuse.scheduledtask import ScheduledTask
 from pygpoabuse.ldap import Ldap
 from pygpoabuse.userrights import UserRights
@@ -9,6 +12,7 @@ from pygpoabuse.userrights import UserRights
 class GPO:
     def __init__(self, smb_session):
         self._smb_session = smb_session
+        self._backups = {}  # Store information about backups
 
     def update_extensionNames(self, extensionName):
         val1 = "00000000-0000-0000-0000-000000000000"
@@ -322,3 +326,295 @@ class GPO:
                 return False
         
         return False
+
+    def backup_gpo(self, domain, gpo_id, backup_dir=None):
+        """Create a backup of a GPO before modification
+        
+        Args:
+            domain: Domain name
+            gpo_id: ID of the GPO to backup
+            backup_dir: Local directory to store backup (default: current directory)
+            
+        Returns:
+            str: Backup ID if successful, False otherwise
+        """
+        try:
+            # Generate backup ID and create backup directory
+            backup_id = f"gpo_backup_{gpo_id}_{int(time.time())}"
+            if backup_dir is None:
+                backup_dir = os.path.join(os.getcwd(), backup_id)
+            else:
+                backup_dir = os.path.join(backup_dir, backup_id)
+                
+            os.makedirs(backup_dir, exist_ok=True)
+            logging.info(f"Creating GPO backup in {backup_dir}")
+            
+            # Connect to SYSVOL
+            tid = self._smb_session.connectTree("SYSVOL")
+            logging.debug("Connected to SYSVOL for backup")
+            
+            # Define the GPO path
+            gpo_path = domain + "/Policies/{" + gpo_id + "}/"
+            
+            # Check if GPO exists
+            try:
+                self._smb_session.listPath("SYSVOL", gpo_path)
+                logging.debug(f"GPO id {gpo_id} exists for backup")
+            except:
+                logging.error(f"GPO id {gpo_id} does not exist for backup", exc_info=True)
+                return False
+                
+            # Store version information
+            try:
+                # Get gpt.ini for version info
+                gpt_path = gpo_path + "gpt.ini"
+                fid = self._smb_session.openFile(tid, gpt_path)
+                gpt_content = self._smb_session.readFile(tid, fid)
+                self._smb_session.closeFile(tid, fid)
+                
+                # Save gpt.ini to backup
+                with open(os.path.join(backup_dir, "gpt.ini"), "wb") as f:
+                    f.write(gpt_content)
+                    
+                # Extract version from gpt.ini
+                try:
+                    gpt_text = gpt_content.decode("utf-8")
+                except UnicodeDecodeError:
+                    gpt_text = gpt_content.decode("latin-1")
+                    
+                version_match = re.search(r'Version=(\d+)', gpt_text)
+                version = int(version_match.group(1)) if version_match else 0
+                
+                # Store backup metadata
+                metadata = {
+                    "gpo_id": gpo_id,
+                    "domain": domain,
+                    "timestamp": int(time.time()),
+                    "version": version,
+                    "backup_dir": backup_dir
+                }
+                
+                # Backup Machine policy files if they exist
+                machine_path = gpo_path + "Machine"
+                try:
+                    # Check if Machine directory exists
+                    self._smb_session.listPath("SYSVOL", machine_path)
+                    
+                    # Backup Machine/Microsoft/Windows NT/SecEdit/GptTmpl.inf (user rights)
+                    secedit_path = machine_path + "/Microsoft/Windows NT/SecEdit"
+                    inf_path = secedit_path + "/GptTmpl.inf"
+                    
+                    try:
+                        # Create local directories
+                        os.makedirs(os.path.join(backup_dir, "Machine", "Microsoft", "Windows NT", "SecEdit"), exist_ok=True)
+                        
+                        # Try to backup GptTmpl.inf
+                        fid = self._smb_session.openFile(tid, inf_path)
+                        inf_content = self._smb_session.readFile(tid, fid)
+                        self._smb_session.closeFile(tid, fid)
+                        
+                        # Save locally
+                        with open(os.path.join(backup_dir, "Machine", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf"), "wb") as f:
+                            f.write(inf_content)
+                            
+                        metadata["machine_rights"] = True
+                    except:
+                        logging.debug("No user rights settings (GptTmpl.inf) found for backup")
+                        metadata["machine_rights"] = False
+                    
+                    # Backup Machine/Preferences/ScheduledTasks/ScheduledTasks.xml
+                    tasks_path = machine_path + "/Preferences/ScheduledTasks"
+                    tasks_file = tasks_path + "/ScheduledTasks.xml"
+                    
+                    try:
+                        # Create local directories
+                        os.makedirs(os.path.join(backup_dir, "Machine", "Preferences", "ScheduledTasks"), exist_ok=True)
+                        
+                        # Try to backup ScheduledTasks.xml
+                        fid = self._smb_session.openFile(tid, tasks_file)
+                        tasks_content = self._smb_session.readFile(tid, fid)
+                        self._smb_session.closeFile(tid, fid)
+                        
+                        # Save locally
+                        with open(os.path.join(backup_dir, "Machine", "Preferences", "ScheduledTasks", "ScheduledTasks.xml"), "wb") as f:
+                            f.write(tasks_content)
+                            
+                        metadata["machine_tasks"] = True
+                    except:
+                        logging.debug("No scheduled tasks (Machine) found for backup")
+                        metadata["machine_tasks"] = False
+                        
+                except:
+                    logging.debug("No Machine policy found for backup")
+                    metadata["machine_policy"] = False
+                
+                # Backup User policy files if they exist
+                user_path = gpo_path + "User"
+                try:
+                    # Check if User directory exists
+                    self._smb_session.listPath("SYSVOL", user_path)
+                    
+                    # Backup User/Preferences/ScheduledTasks/ScheduledTasks.xml
+                    tasks_path = user_path + "/Preferences/ScheduledTasks"
+                    tasks_file = tasks_path + "/ScheduledTasks.xml"
+                    
+                    try:
+                        # Create local directories
+                        os.makedirs(os.path.join(backup_dir, "User", "Preferences", "ScheduledTasks"), exist_ok=True)
+                        
+                        # Try to backup ScheduledTasks.xml
+                        fid = self._smb_session.openFile(tid, tasks_file)
+                        tasks_content = self._smb_session.readFile(tid, fid)
+                        self._smb_session.closeFile(tid, fid)
+                        
+                        # Save locally
+                        with open(os.path.join(backup_dir, "User", "Preferences", "ScheduledTasks", "ScheduledTasks.xml"), "wb") as f:
+                            f.write(tasks_content)
+                            
+                        metadata["user_tasks"] = True
+                    except:
+                        logging.debug("No scheduled tasks (User) found for backup")
+                        metadata["user_tasks"] = False
+                        
+                except:
+                    logging.debug("No User policy found for backup")
+                    metadata["user_policy"] = False
+                
+                # Save metadata
+                with open(os.path.join(backup_dir, "metadata.json"), "w") as f:
+                    json.dump(metadata, f, indent=2)
+                
+                # Store backup reference
+                self._backups[backup_id] = metadata
+                
+                logging.success(f"GPO backup completed: {backup_id}")
+                return backup_id
+                
+            except Exception as e:
+                logging.error(f"Error backing up GPO: {str(e)}", exc_info=True)
+                return False
+                
+        except Exception as e:
+            logging.error(f"Error creating GPO backup: {str(e)}", exc_info=True)
+            return False
+
+    def restore_gpo(self, backup_id=None, backup_dir=None):
+        """Restore a GPO from backup
+        
+        Args:
+            backup_id: ID of the backup to restore
+            backup_dir: Directory containing the backup
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Determine backup location
+            if backup_id is not None and backup_id in self._backups:
+                backup_dir = self._backups[backup_id]["backup_dir"]
+            elif backup_dir is None:
+                logging.error("Either backup_id or backup_dir must be provided")
+                return False
+                
+            # Load metadata
+            try:
+                with open(os.path.join(backup_dir, "metadata.json"), "r") as f:
+                    metadata = json.load(f)
+            except:
+                logging.error(f"Could not load backup metadata from {backup_dir}")
+                return False
+                
+            gpo_id = metadata["gpo_id"]
+            domain = metadata["domain"]
+            
+            # Connect to SYSVOL
+            tid = self._smb_session.connectTree("SYSVOL")
+            logging.debug("Connected to SYSVOL for restore")
+            
+            # Define the GPO path
+            gpo_path = domain + "/Policies/{" + gpo_id + "}/"
+            
+            # Check if GPO exists
+            try:
+                self._smb_session.listPath("SYSVOL", gpo_path)
+                logging.debug(f"GPO id {gpo_id} exists for restore")
+            except:
+                logging.error(f"GPO id {gpo_id} does not exist for restore", exc_info=True)
+                return False
+                
+            # Restore gpt.ini
+            try:
+                with open(os.path.join(backup_dir, "gpt.ini"), "rb") as f:
+                    gpt_content = f.read()
+                    
+                gpt_path = gpo_path + "gpt.ini"
+                fid = self._smb_session.openFile(tid, gpt_path, mode=0)  # Open for write
+                self._smb_session.writeFile(tid, fid, gpt_content)
+                self._smb_session.closeFile(tid, fid)
+                logging.debug("Restored gpt.ini")
+            except:
+                logging.error("Failed to restore gpt.ini", exc_info=True)
+                
+            # Restore Machine policy files if they were backed up
+            if metadata.get("machine_rights", False):
+                try:
+                    # Restore GptTmpl.inf
+                    inf_path = gpo_path + "Machine/Microsoft/Windows NT/SecEdit/GptTmpl.inf"
+                    
+                    # Make sure the directories exist
+                    self._check_or_create(gpo_path, "Machine/Microsoft/Windows NT/SecEdit")
+                    
+                    with open(os.path.join(backup_dir, "Machine", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf"), "rb") as f:
+                        inf_content = f.read()
+                        
+                    fid = self._smb_session.createFile(tid, inf_path)
+                    self._smb_session.writeFile(tid, fid, inf_content)
+                    self._smb_session.closeFile(tid, fid)
+                    logging.debug("Restored Machine user rights (GptTmpl.inf)")
+                except:
+                    logging.error("Failed to restore Machine user rights", exc_info=True)
+            
+            # Restore Machine scheduled tasks if they were backed up
+            if metadata.get("machine_tasks", False):
+                try:
+                    # Restore ScheduledTasks.xml
+                    tasks_path = gpo_path + "Machine/Preferences/ScheduledTasks/ScheduledTasks.xml"
+                    
+                    # Make sure the directories exist
+                    self._check_or_create(gpo_path, "Machine/Preferences/ScheduledTasks")
+                    
+                    with open(os.path.join(backup_dir, "Machine", "Preferences", "ScheduledTasks", "ScheduledTasks.xml"), "rb") as f:
+                        tasks_content = f.read()
+                        
+                    fid = self._smb_session.createFile(tid, tasks_path)
+                    self._smb_session.writeFile(tid, fid, tasks_content)
+                    self._smb_session.closeFile(tid, fid)
+                    logging.debug("Restored Machine scheduled tasks")
+                except:
+                    logging.error("Failed to restore Machine scheduled tasks", exc_info=True)
+            
+            # Restore User scheduled tasks if they were backed up
+            if metadata.get("user_tasks", False):
+                try:
+                    # Restore ScheduledTasks.xml
+                    tasks_path = gpo_path + "User/Preferences/ScheduledTasks/ScheduledTasks.xml"
+                    
+                    # Make sure the directories exist
+                    self._check_or_create(gpo_path, "User/Preferences/ScheduledTasks")
+                    
+                    with open(os.path.join(backup_dir, "User", "Preferences", "ScheduledTasks", "ScheduledTasks.xml"), "rb") as f:
+                        tasks_content = f.read()
+                        
+                    fid = self._smb_session.createFile(tid, tasks_path)
+                    self._smb_session.writeFile(tid, fid, tasks_content)
+                    self._smb_session.closeFile(tid, fid)
+                    logging.debug("Restored User scheduled tasks")
+                except:
+                    logging.error("Failed to restore User scheduled tasks", exc_info=True)
+            
+            logging.success(f"GPO restore completed for {gpo_id}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error restoring GPO: {str(e)}", exc_info=True)
+            return False
