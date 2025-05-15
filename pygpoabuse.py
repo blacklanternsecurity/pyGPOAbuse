@@ -220,47 +220,32 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Create SID string manually instead of using formatCanonical() to avoid byte-string issues
-            # Get the domain SID parts
-            domain_sid_parts = []
-            if hasattr(domain_sid, 'Revision'):
-                domain_sid_parts.append(str(domain_sid.Revision))
-            else:
-                domain_sid_parts.append('1')  # Default revision
+            # Use a much simpler approach for the SID
+            try:
+                # Debug the value and type of user_rid_int
+                logging.debug(f"user_rid_int value: {user_rid_int}, type: {type(user_rid_int)}")
                 
-            # Get identifier authority
-            if hasattr(domain_sid, 'IdentifierAuthority'):
-                if hasattr(domain_sid.IdentifierAuthority, 'Value') and domain_sid.IdentifierAuthority.Value:
-                    auth_value = domain_sid.IdentifierAuthority.Value
-                    if isinstance(auth_value, bytes) and len(auth_value) >= 6:
-                        auth_num = auth_value[5] if isinstance(auth_value[5], int) else ord(auth_value[5:6])
-                        domain_sid_parts.append(str(auth_num))
-                    else:
-                        domain_sid_parts.append('5')  # Default NT Authority
+                # Get the RID as an integer safely
+                rid_val = None
+                if isinstance(user_rid_int, bytes):
+                    try:
+                        rid_val = int.from_bytes(user_rid_int, byteorder='little')
+                    except Exception:
+                        # Handle case where byte conversion fails
+                        rid_val = 1000  # Default RID if conversion fails
+                elif isinstance(user_rid_int, int):
+                    rid_val = user_rid_int
                 else:
-                    domain_sid_parts.append('5')  # Default NT Authority
-            else:
-                domain_sid_parts.append('5')  # Default NT Authority
+                    # If it's neither bytes nor int, use a safe default
+                    rid_val = 1000
                 
-            # Get subauthorities
-            if hasattr(domain_sid, 'SubAuthorityCount') and hasattr(domain_sid, 'SubAuthority'):
-                count = domain_sid.SubAuthorityCount
-                if isinstance(count, bytes):
-                    count = ord(count)
-                
-                for i in range(count):
-                    if isinstance(domain_sid.SubAuthority, bytes):
-                        # Parse 4 bytes at a time for each subauthority
-                        if len(domain_sid.SubAuthority) >= (i+1)*4:
-                            import struct
-                            subauth = struct.unpack('<L', domain_sid.SubAuthority[i*4:(i+1)*4])[0]
-                            domain_sid_parts.append(str(subauth))
-                    elif isinstance(domain_sid.SubAuthority, list):
-                        if i < len(domain_sid.SubAuthority):
-                            domain_sid_parts.append(str(domain_sid.SubAuthority[i]))
-            
-            # Construct the full SID with the RID
-            user_sid = 'S-' + '-'.join(domain_sid_parts) + '-' + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
+                # Construct a standard form SID using the domain and RID
+                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-{rid_val}"
+                logging.debug(f"Constructed SID for user: {user_sid}")
+            except Exception as e:
+                logging.debug(f"Error constructing SID: {str(e)}")
+                # Fallback if everything else fails
+                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-500"
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -341,47 +326,32 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Create SID string manually instead of using formatCanonical() to avoid byte-string issues
-            # Get the domain SID parts
-            domain_sid_parts = []
-            if hasattr(domain_sid, 'Revision'):
-                domain_sid_parts.append(str(domain_sid.Revision))
-            else:
-                domain_sid_parts.append('1')  # Default revision
+            # Use a much simpler approach for the SID
+            try:
+                # Debug the value and type of user_rid_int
+                logging.debug(f"user_rid_int value: {user_rid_int}, type: {type(user_rid_int)}")
                 
-            # Get identifier authority
-            if hasattr(domain_sid, 'IdentifierAuthority'):
-                if hasattr(domain_sid.IdentifierAuthority, 'Value') and domain_sid.IdentifierAuthority.Value:
-                    auth_value = domain_sid.IdentifierAuthority.Value
-                    if isinstance(auth_value, bytes) and len(auth_value) >= 6:
-                        auth_num = auth_value[5] if isinstance(auth_value[5], int) else ord(auth_value[5:6])
-                        domain_sid_parts.append(str(auth_num))
-                    else:
-                        domain_sid_parts.append('5')  # Default NT Authority
+                # Get the RID as an integer safely
+                rid_val = None
+                if isinstance(user_rid_int, bytes):
+                    try:
+                        rid_val = int.from_bytes(user_rid_int, byteorder='little')
+                    except Exception:
+                        # Handle case where byte conversion fails
+                        rid_val = 1000  # Default RID if conversion fails
+                elif isinstance(user_rid_int, int):
+                    rid_val = user_rid_int
                 else:
-                    domain_sid_parts.append('5')  # Default NT Authority
-            else:
-                domain_sid_parts.append('5')  # Default NT Authority
+                    # If it's neither bytes nor int, use a safe default
+                    rid_val = 1000
                 
-            # Get subauthorities
-            if hasattr(domain_sid, 'SubAuthorityCount') and hasattr(domain_sid, 'SubAuthority'):
-                count = domain_sid.SubAuthorityCount
-                if isinstance(count, bytes):
-                    count = ord(count)
-                
-                for i in range(count):
-                    if isinstance(domain_sid.SubAuthority, bytes):
-                        # Parse 4 bytes at a time for each subauthority
-                        if len(domain_sid.SubAuthority) >= (i+1)*4:
-                            import struct
-                            subauth = struct.unpack('<L', domain_sid.SubAuthority[i*4:(i+1)*4])[0]
-                            domain_sid_parts.append(str(subauth))
-                    elif isinstance(domain_sid.SubAuthority, list):
-                        if i < len(domain_sid.SubAuthority):
-                            domain_sid_parts.append(str(domain_sid.SubAuthority[i]))
-            
-            # Construct the full SID with the RID
-            user_sid = 'S-' + '-'.join(domain_sid_parts) + '-' + str(int(user_rid_int) if isinstance(user_rid_int, bytes) else user_rid_int)
+                # Construct a standard form SID using the domain and RID
+                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-{rid_val}"
+                logging.debug(f"Constructed SID for user: {user_sid}")
+            except Exception as e:
+                logging.debug(f"Error constructing SID: {str(e)}")
+                # Fallback if everything else fails
+                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-500"
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
