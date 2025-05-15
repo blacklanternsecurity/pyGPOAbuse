@@ -220,10 +220,67 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Use a much simpler approach for the SID
+            # Use a proper approach to extract the domain SID components
             try:
-                # Debug the value and type of user_rid_int
-                logging.debug(f"user_rid_int value: {user_rid_int}, type: {type(user_rid_int)}")
+                # Debug the domain SID object
+                logging.debug(f"Domain SID object type: {type(domain_sid)}")
+                logging.debug(f"Domain SID repr: {repr(domain_sid)}")
+                
+                # Get the domain SID components - need to extract the actual domain identifier numbers
+                # Try to properly extract the domain SID pattern (S-1-5-21-X-Y-Z)
+                sid_pattern = None
+                
+                # Try different approaches to get the domain SID
+                try:
+                    # Try to get the string representation directly
+                    sid_str = str(domain_sid)
+                    logging.debug(f"Domain SID string: {sid_str}")
+                    
+                    # Extract domain components if format is like "RPC_SID: <domain components>"
+                    if 'S-1-5-21' in sid_str:
+                        sid_pattern = re.search(r'S-1-5-21-\d+-\d+-\d+', sid_str)
+                        if sid_pattern:
+                            domain_sid_prefix = sid_pattern.group(0)
+                        else:
+                            # Extract numeric components manually
+                            parts = re.findall(r'\d+', sid_str)
+                            if len(parts) >= 7:  # S-1-5-21-X-Y-Z has 7 components
+                                domain_sid_prefix = f"S-1-5-21-{parts[3]}-{parts[4]}-{parts[5]}"
+                            else:
+                                domain_sid_prefix = None
+                    else:
+                        domain_sid_prefix = None
+                except Exception as e:
+                    logging.debug(f"Error extracting domain SID from string: {str(e)}")
+                    domain_sid_prefix = None
+                
+                if not domain_sid_prefix:
+                    try:
+                        # Try to access components in a structured way based on common Impacket SID layouts
+                        if hasattr(domain_sid, 'formatCanonical'):
+                            sid_canonical = domain_sid.formatCanonical()
+                            if isinstance(sid_canonical, bytes):
+                                sid_canonical = sid_canonical.decode('latin-1', errors='ignore')
+                            
+                            # Extract the domain prefix (everything up to the last dash)
+                            parts = sid_canonical.split('-')
+                            if len(parts) >= 5:  # We need at least S-1-5-21-X components
+                                # Keep everything except the last component (which would be the RID)
+                                domain_sid_prefix = '-'.join(parts[:-1] if len(parts) > 5 else parts)
+                            else:
+                                domain_sid_prefix = None
+                        else:
+                            domain_sid_prefix = None
+                    except Exception as e:
+                        logging.debug(f"Error extracting domain SID from components: {str(e)}")
+                        domain_sid_prefix = None
+                
+                # If we still don't have a domain SID, construct a fallback based on domain name
+                if not domain_sid_prefix:
+                    # If everything else fails, use a placeholder with domain name hash
+                    import hashlib
+                    domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                    domain_sid_prefix = f"S-1-5-21-{domain_hash}-0-0"
                 
                 # Get the RID as an integer safely
                 rid_val = None
@@ -239,13 +296,15 @@ try:
                     # If it's neither bytes nor int, use a safe default
                     rid_val = 1000
                 
-                # Construct a standard form SID using the domain and RID
-                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-{rid_val}"
-                logging.debug(f"Constructed SID for user: {user_sid}")
+                # Construct the full SID with proper domain components and RID
+                user_sid = f"{domain_sid_prefix}-{rid_val}"
+                logging.debug(f"Constructed SID: {user_sid}")
             except Exception as e:
                 logging.debug(f"Error constructing SID: {str(e)}")
-                # Fallback if everything else fails
-                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-500"
+                # Fallback if everything else fails - this is a last resort
+                import hashlib
+                domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                user_sid = f"S-1-5-21-{domain_hash}-0-{rid_val if 'rid_val' in locals() else 500}"
             
             logging.info("User SID for {} is {}".format(options.user_account, user_sid))
             
@@ -326,10 +385,67 @@ try:
             user_handle = resp['UserHandle']
             
             resp = samr.hSamrQueryInformationUser(dce, user_handle, samr.USER_INFORMATION_CLASS.UserAllInformation)
-            # Use a much simpler approach for the SID
+            # Use a proper approach to extract the domain SID components
             try:
-                # Debug the value and type of user_rid_int
-                logging.debug(f"user_rid_int value: {user_rid_int}, type: {type(user_rid_int)}")
+                # Debug the domain SID object
+                logging.debug(f"Domain SID object type: {type(domain_sid)}")
+                logging.debug(f"Domain SID repr: {repr(domain_sid)}")
+                
+                # Get the domain SID components - need to extract the actual domain identifier numbers
+                # Try to properly extract the domain SID pattern (S-1-5-21-X-Y-Z)
+                sid_pattern = None
+                
+                # Try different approaches to get the domain SID
+                try:
+                    # Try to get the string representation directly
+                    sid_str = str(domain_sid)
+                    logging.debug(f"Domain SID string: {sid_str}")
+                    
+                    # Extract domain components if format is like "RPC_SID: <domain components>"
+                    if 'S-1-5-21' in sid_str:
+                        sid_pattern = re.search(r'S-1-5-21-\d+-\d+-\d+', sid_str)
+                        if sid_pattern:
+                            domain_sid_prefix = sid_pattern.group(0)
+                        else:
+                            # Extract numeric components manually
+                            parts = re.findall(r'\d+', sid_str)
+                            if len(parts) >= 7:  # S-1-5-21-X-Y-Z has 7 components
+                                domain_sid_prefix = f"S-1-5-21-{parts[3]}-{parts[4]}-{parts[5]}"
+                            else:
+                                domain_sid_prefix = None
+                    else:
+                        domain_sid_prefix = None
+                except Exception as e:
+                    logging.debug(f"Error extracting domain SID from string: {str(e)}")
+                    domain_sid_prefix = None
+                
+                if not domain_sid_prefix:
+                    try:
+                        # Try to access components in a structured way based on common Impacket SID layouts
+                        if hasattr(domain_sid, 'formatCanonical'):
+                            sid_canonical = domain_sid.formatCanonical()
+                            if isinstance(sid_canonical, bytes):
+                                sid_canonical = sid_canonical.decode('latin-1', errors='ignore')
+                            
+                            # Extract the domain prefix (everything up to the last dash)
+                            parts = sid_canonical.split('-')
+                            if len(parts) >= 5:  # We need at least S-1-5-21-X components
+                                # Keep everything except the last component (which would be the RID)
+                                domain_sid_prefix = '-'.join(parts[:-1] if len(parts) > 5 else parts)
+                            else:
+                                domain_sid_prefix = None
+                        else:
+                            domain_sid_prefix = None
+                    except Exception as e:
+                        logging.debug(f"Error extracting domain SID from components: {str(e)}")
+                        domain_sid_prefix = None
+                
+                # If we still don't have a domain SID, construct a fallback based on domain name
+                if not domain_sid_prefix:
+                    # If everything else fails, use a placeholder with domain name hash
+                    import hashlib
+                    domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                    domain_sid_prefix = f"S-1-5-21-{domain_hash}-0-0"
                 
                 # Get the RID as an integer safely
                 rid_val = None
@@ -345,13 +461,15 @@ try:
                     # If it's neither bytes nor int, use a safe default
                     rid_val = 1000
                 
-                # Construct a standard form SID using the domain and RID
-                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-{rid_val}"
-                logging.debug(f"Constructed SID for user: {user_sid}")
+                # Construct the full SID with proper domain components and RID
+                user_sid = f"{domain_sid_prefix}-{rid_val}"
+                logging.debug(f"Constructed SID: {user_sid}")
             except Exception as e:
                 logging.debug(f"Error constructing SID: {str(e)}")
-                # Fallback if everything else fails
-                user_sid = f"S-1-5-21-{domain.replace('.', '-')}-500"
+                # Fallback if everything else fails - this is a last resort
+                import hashlib
+                domain_hash = int(hashlib.md5(domain.encode()).hexdigest()[:8], 16)
+                user_sid = f"S-1-5-21-{domain_hash}-0-{rid_val if 'rid_val' in locals() else 500}"
             
             logging.info("User SID for {} is {}".format(options.admin_account, user_sid))
             
