@@ -7,6 +7,7 @@ import json
 from pygpoabuse.scheduledtask import ScheduledTask
 from pygpoabuse.ldap import Ldap
 from pygpoabuse.userrights import UserRights
+from impacket.smb3structs import FILE_READ_DATA
 
 
 class GPO:
@@ -368,7 +369,7 @@ class GPO:
             try:
                 # Get gpt.ini for version info
                 gpt_path = gpo_path + "gpt.ini"
-                fid = self._smb_session.openFile(tid, gpt_path)
+                fid = self._smb_session.openFile(tid, gpt_path, desiredAccess=FILE_READ_DATA)
                 gpt_content = self._smb_session.readFile(tid, fid)
                 self._smb_session.closeFile(tid, fid)
                 
@@ -409,7 +410,7 @@ class GPO:
                         os.makedirs(os.path.join(backup_dir, "Machine", "Microsoft", "Windows NT", "SecEdit"), exist_ok=True)
                         
                         # Try to backup GptTmpl.inf
-                        fid = self._smb_session.openFile(tid, inf_path)
+                        fid = self._smb_session.openFile(tid, inf_path, desiredAccess=FILE_READ_DATA)
                         inf_content = self._smb_session.readFile(tid, fid)
                         self._smb_session.closeFile(tid, fid)
                         
@@ -431,7 +432,7 @@ class GPO:
                         os.makedirs(os.path.join(backup_dir, "Machine", "Preferences", "ScheduledTasks"), exist_ok=True)
                         
                         # Try to backup ScheduledTasks.xml
-                        fid = self._smb_session.openFile(tid, tasks_file)
+                        fid = self._smb_session.openFile(tid, tasks_file, desiredAccess=FILE_READ_DATA)
                         tasks_content = self._smb_session.readFile(tid, fid)
                         self._smb_session.closeFile(tid, fid)
                         
@@ -463,7 +464,7 @@ class GPO:
                         os.makedirs(os.path.join(backup_dir, "User", "Preferences", "ScheduledTasks"), exist_ok=True)
                         
                         # Try to backup ScheduledTasks.xml
-                        fid = self._smb_session.openFile(tid, tasks_file)
+                        fid = self._smb_session.openFile(tid, tasks_file, desiredAccess=FILE_READ_DATA)
                         tasks_content = self._smb_session.readFile(tid, fid)
                         self._smb_session.closeFile(tid, fid)
                         
@@ -548,7 +549,7 @@ class GPO:
                     gpt_content = f.read()
                     
                 gpt_path = gpo_path + "gpt.ini"
-                fid = self._smb_session.openFile(tid, gpt_path, mode=0)  # Open for write
+                fid = self._smb_session.openFile(tid, gpt_path, desiredAccess=FILE_READ_DATA, mode=0)  # Open for write
                 self._smb_session.writeFile(tid, fid, gpt_content)
                 self._smb_session.closeFile(tid, fid)
                 logging.debug("Restored gpt.ini")
